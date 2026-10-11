@@ -10,7 +10,7 @@ import { h, fill, loading, errorBox, errorMessage } from "../ui.js";
 import { isApiError } from "../api.js";
 import { openExternal } from "../native.js";
 import { formatInstant, formatSlot, slotPreview } from "../format.js";
-import { state, cityDetail, citySlots, go } from "../state.js";
+import { state, cityDetail, citySlots, go, switchTab } from "../state.js";
 
 export const title = () => "";
 
@@ -49,10 +49,11 @@ export function orderServices(services, snapshot, focus = null) {
     .sort((a, b) => rank(a.svc) - rank(b.svc) || when(a.svc).localeCompare(when(b.svc)) || a.i - b.i);
 }
 
-// The live alert this device already has for a service in this city: its
-// card offers to edit that one instead of setting up the same alert again.
-export function alertFor(subs, slug, service) {
-  return (subs ?? []).find((s) => s.active && s.city === slug && s.appointment_type === service) ?? null;
+// The live alerts this device already has for a service in this city: its
+// card offers to edit them first, and another alert for the same service below
+// that, as the website allows (other offices, other times).
+export function alertsFor(subs, slug, service) {
+  return (subs ?? []).filter((s) => s.active && s.city === slug && s.appointment_type === service);
 }
 
 export function mount(el, params) {
@@ -94,12 +95,16 @@ function show(body, detail, { snapshot, error }, lang, focus) {
   const asOf = formatInstant(snapshot?.polled_at, lang);
   const notice = slotsNotice(error);
   const cards = orderServices(detail.services ?? [], snapshot, focus).map(({ svc, snap }) => {
-    const sub = alertFor(state.subs, detail.slug, svc.id);
-    const watch = h(
-      "button",
-      { class: "btn btn-secondary", onclick: () => go("form", sub ? { sub } : { slug: detail.slug, service: svc.id }) },
-      t(sub ? "city.editAlert" : "city.watch"),
-    );
+    const mine = alertsFor(state.subs, detail.slug, svc.id);
+    const newAlert = () => go("form", { slug: detail.slug, service: svc.id });
+    // One alert: edit it from here. Several: the list, which tells them apart.
+    const [label, open] = !mine.length
+      ? ["city.watch", newAlert]
+      : mine.length === 1
+        ? ["city.editAlert", () => go("form", { sub: mine[0] })]
+        : ["tab.subs", () => switchTab("subs", [{ name: "subs" }])];
+    const watch = h("button", { class: "btn btn-secondary", onclick: open }, t(label));
+    const another = mine.length ? h("button", { class: "btn btn-link", onclick: newAlert }, t("city.addAlert")) : null;
     let content;
     if (!snapshot) {
       // No snapshot at all: nothing is known about any service, so no card
@@ -128,7 +133,7 @@ function show(body, detail, { snapshot, error }, lang, focus) {
         svcAsOf && svcAsOf !== asOf ? h("p", { class: "muted small" }, t("city.asOf", { time: svcAsOf })) : null,
       );
     }
-    return h("section", { class: `card service${svc.id === focus ? " highlight" : ""}` }, h("h3", null, svc.name), content, watch);
+    return h("section", { class: `card service${svc.id === focus ? " highlight" : ""}` }, h("h3", null, svc.name), content, watch, another);
   });
   fill(
     body,
