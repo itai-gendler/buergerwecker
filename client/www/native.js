@@ -29,3 +29,10 @@ export async function openAppSettings() {
   if (gate?.openSettings) return gate.openSettings();
   if (platform() === "ios") globalThis.location.href = "app-settings:";
 }
+
+// Asks the App Store or Google Play for its rating sheet. Whether it shows is
+// the store's call and nothing comes back; an older build without the plugin,
+// or a failing one, is no reason to bother the reader.
+export function requestReview() {
+  plugin("StoreReview")?.requestReview().catch(() => {});
+}
