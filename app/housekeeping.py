@@ -48,7 +48,7 @@ def run_once(conn: sqlite3.Connection) -> None:
     step(_prune_slots_cache, conn)
     step(_prune_availability, conn)
     step(_prune_slot_snapshots, conn)
-    step(_check_parser_canary, conn, cfg)
+    # The parser canary is not here: the poller runs it every cycle.
     step(_check_backup_health, conn, cfg)
     step(_start_catalog_sync, cfg)
     if not step(_send_summary_email, conn, cfg, failed=tuple(failed)):
@@ -447,10 +447,20 @@ def _prune_availability(conn):
     prune_availability(conn)
 
 def _check_parser_canary(conn, cfg):
-    """Email developer if any city has been all-zero for > threshold during business hours."""
+    """Email developer if any city has been all-zero for > threshold during
+    business hours. Called by the poller every cycle (poller._check_canary);
+    last_canary_alert_at keeps it to one mail per city a day."""
     from datetime import datetime, timedelta
     from app.db import sql_ts
     now = datetime.utcnow()
+    # Only a poll clears zero_match_since, so a city nobody polls any more
+    # would keep its last value: the canary forever, and a false alarm on the
+    # first empty poll once someone subscribes there again.
+    from app.repo import active_subscriptions
+    polled = sorted({s.city for s in active_subscriptions(conn)})
+    conn.execute(
+        "UPDATE city_state SET zero_match_since=NULL WHERE zero_match_since "
+        f"IS NOT NULL AND city NOT IN ({','.join('?' * len(polled))})", polled)
     # Skip outside typical-load hours (08:00–20:00 Europe/Berlin ≈ 06:00–18:00 UTC)
     if not (6 <= now.hour <= 18):
         return
@@ -486,8 +496,14 @@ def _check_parser_canary(conn, cfg):
                 "UPDATE city_state SET last_canary_alert_at=? WHERE city=?",
                 (sql_ts(now), city),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"parser canary mail for {city} failed: {exc!r}", flush=True)
+            # Retry in an hour, not every cycle: a mail outage would otherwise
+            # walk the whole provider chain each minute.
+            conn.execute(
+                "UPDATE city_state SET last_canary_alert_at=? WHERE city=?",
+                (sql_ts(now - timedelta(hours=23)), city),
+            )
 
 def _check_backup_health(conn, cfg):
     """Alert if backup hasn't written meta.last_backup_at in > 48h, OR if
