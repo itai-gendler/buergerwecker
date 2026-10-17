@@ -4,7 +4,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
 const prefs = new Map();
-const delivered = { list: [], times: {} };
+const delivered = { list: [], times: {}, removed: [] };
 globalThis.Capacitor = {
   isNativePlatform: () => true,
   isPluginAvailable: (n) => n === "Preferences" || n === "PushNotifications" || n === "PushGate",
@@ -18,6 +18,7 @@ globalThis.Capacitor = {
     },
     PushNotifications: {
       getDeliveredNotifications: async () => ({ notifications: delivered.list }),
+      removeDeliveredNotifications: async ({ notifications }) => void delivered.removed.push(...notifications),
     },
     PushGate: { posted: async () => ({ times: delivered.times }) },
   },
@@ -39,6 +40,7 @@ beforeEach(async () => {
   prefs.clear();
   delivered.list = [];
   delivered.times = {};
+  delivered.removed = [];
   inbox.reset();
   await inbox.load(T0);
 });
@@ -103,6 +105,25 @@ test("iOS: what sits in the notification centre is picked up once, and not again
   delivered.list.push(slotsPush({ id: "n3", body: "new" }));
   assert.equal(await inbox.harvest(T0 + 4000), true);
   assert.deepEqual(inbox.items().map((e) => e.id), ["n3"]);
+});
+
+test("iOS: a setup push left in the notification centre hands its code over, and is not listed", async () => {
+  const codes = [];
+  delivered.list = [{ id: "v", data: { type: "verify", code: "123456" } }, slotsPush({ id: "n1" })];
+  assert.equal(await inbox.harvest(T0, (d) => codes.push(d.code)), true);
+  assert.deepEqual(codes, ["123456"]);
+  assert.equal(inbox.items().length, 1);
+  // Resend made the first code stale: only the newest is posted, all are cleared.
+  delivered.list = [{ id: "v2", data: { type: "verify", code: "new", sent: "20" } }, { id: "v1", data: { type: "verify", code: "old", sent: "10" } }];
+  delivered.removed = [];
+  codes.length = 0;
+  await inbox.harvest(T0 + 1, (d) => codes.push(d.code));
+  assert.deepEqual(codes, ["new"]);
+  assert.deepEqual(delivered.removed.map((n) => n.id).sort(), ["v1", "v2"]);
+  // A post that failed (offline) leaves the push for the next resume.
+  delivered.removed = [];
+  await inbox.harvest(T0 + 2, () => false);
+  assert.deepEqual(delivered.removed, []);
 });
 
 test("iOS: a notification-centre copy is dated by the server's send time, not the app's launch", async () => {

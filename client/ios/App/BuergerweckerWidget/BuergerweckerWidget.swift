@@ -126,6 +126,16 @@ struct Slot: Codable, Equatable {
     let office: String?
 
     var sortKey: String { date + " " + (time ?? "") }
+
+    // A slot whose start has passed, by the cities' own clock (a day-only one lasts the day).
+    static func passed(date: String, time: String?, now: Date) -> Bool {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Europe/Berlin")
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return date + " " + (time ?? "24:00") < f.string(from: now)
+    }
+    func passed(_ now: Date) -> Bool { Slot.passed(date: date, time: time, now: now) }
 }
 
 // One city's last answer. `slot == nil && hasData` means "polled, nothing
@@ -202,7 +212,8 @@ enum SlotsAPI {
         var best: Slot?
         for svc in wanted {
             for alert in alerts where alert.service == svc.id {
-                for e in svc.slots ?? [] where Filter.matches(alert, date: e.date, time: e.time, location: e.location, now: now) {
+                for e in svc.slots ?? [] where !Slot.passed(date: e.date, time: e.time, now: now)
+                    && Filter.matches(alert, date: e.date, time: e.time, location: e.location, now: now) {
                     let slot = Slot(date: e.date, time: e.time, office: e.location_name)
                     if best == nil || slot.sortKey < best!.sortKey { best = slot }
                 }
@@ -314,11 +325,17 @@ struct Words {
         return self("date.atTime", ["day": d, "time": time(t)])
     }
 
-    func asOf(_ date: Date?) -> String? {
+    func asOf(_ date: Date?, now: Date = Date()) -> String? {
         guard let date else { return nil }
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        return self("widget.asOf", ["time": f.string(from: date)])
+        var when = f.string(from: date)
+        if !Calendar.current.isDate(date, inSameDayAs: now) {
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyy-MM-dd"
+            when = slot(Slot(date: f.string(from: date), time: when, office: nil))
+        }
+        return self("widget.asOf", ["time": when])
     }
 }
 
@@ -433,7 +450,11 @@ struct SlotProvider: TimelineProvider {
         Cache.save(cache)
         let rows = current.cities
             .filter { cache[$0.slug]?.gone != true }
-            .map { Row(id: $0.slug, name: $0.name, office: $0.office ?? "", snapshot: cache[$0.slug]) }
+            .map { c -> Row in
+                var snap = cache[c.slug]
+                if let s = snap?.slot, s.passed(Date()) { snap?.slot = nil }
+                return Row(id: c.slug, name: c.name, office: c.office ?? "", snapshot: snap)
+            }
         return SlotEntry(date: Date(), words: words, rows: rows)
     }
 }

@@ -174,7 +174,10 @@ export async function record(n, now = Date.now()) {
 }
 
 // What still sits in the notification centre or shade. true when any of it is new.
-export async function harvest(now = Date.now()) {
+// A setup push among it is handed to `onVerify` too: opening the app from its
+// icon instead of the push leaves no tap to carry the code. `onVerify` returns
+// true once the code is settled; until then the push stays for the next resume.
+export async function harvest(now = Date.now(), onVerify) {
   let delivered = [];
   try {
     delivered = (await plugin("PushNotifications")?.getDeliveredNotifications?.())?.notifications ?? [];
@@ -183,7 +186,19 @@ export async function harvest(now = Date.now()) {
   }
   const times = (await plugin("PushGate")?.posted?.().catch(() => null))?.times ?? {};
   let changed = false;
-  for (const n of delivered) if (await record({ ...n, postedAt: times[n.tag] }, now)) changed = true;
+  // Only the newest setup push: Resend invalidates the codes before it.
+  let verify = null;
+  const sent = (n) => Number(n.data.sent) || 0;
+  for (const n of delivered) {
+    if (n?.data?.type === "verify") {
+      if (!verify || sent(n) >= sent(verify)) verify = n;
+    } else if (await record({ ...n, postedAt: times[n.tag] }, now)) changed = true;
+  }
+  if (verify && (await onVerify?.(verify.data))) {
+    // Used up; it would only come back on the next resume.
+    const stale = delivered.filter((n) => n?.data?.type === "verify");
+    await plugin("PushNotifications")?.removeDeliveredNotifications?.({ notifications: stale }).catch?.(() => {});
+  }
   return changed;
 }
 

@@ -132,11 +132,15 @@ async function handleVerify(data) {
   try {
     const wasWaiting = push.awaitingVerification();
     if ((await push.verify(data.code)) && wasWaiting) toast(t("verify.done"));
+    return true;
   } catch (e) {
     if (e?.error === "invalid_code") {
       verifyScreen.noteInvalidCode();
       render();
-    } else toast(errorMessage(e));
+      return true;
+    }
+    toast(errorMessage(e));
+    return false; // offline or the like: the code is still good
   }
 }
 
@@ -156,7 +160,11 @@ function onNotification(n, tapped) {
 
 // iOS: notifications still in the notification centre, into the list.
 function harvest() {
-  inbox.harvest().then((added) => added && changed("inbox"));
+  // Only while waiting: a delivered code lingers, and a used or expired one
+  // would flag invalid_code on every resume.
+  inbox.harvest(Date.now(), async (data) =>
+    !push.awaitingVerification() || handleVerify(data),
+  ).then((added) => added && changed("inbox"));
 }
 
 let errorShown = false;
