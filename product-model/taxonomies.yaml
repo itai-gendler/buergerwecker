@@ -1,0 +1,10 @@
+scenarioKinds:
+- id: primary
+  name: Primary
+  description: The ordinary intended result.
+- id: edge
+  name: Edge
+  description: A meaningful alternate condition, dependency failure or timing boundary.
+- id: validation
+  name: Validation
+  description: An input or request is declined without changing the requested thing.
